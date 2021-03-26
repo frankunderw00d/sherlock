@@ -1,1 +1,4 @@
 .idea/
+
+# ignore any of test file
+*_test.go
