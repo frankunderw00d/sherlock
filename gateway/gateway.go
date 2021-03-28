@@ -239,8 +239,6 @@ func (bg *baseGateway) FilterIP(host string) bool {
 		return false
 	}
 	log.DebugF("Split host : %s", host)
-	if !bg.bl.Filter(h) {
-		return false
-	}
-	return true
+
+	return bg.bl.Filter(h)
 }
