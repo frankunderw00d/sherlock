@@ -1,7 +1,7 @@
 package redis
 
 import (
-	uRand "jarvis/util/rand"
+	uRand "sherlock/util/rand"
 )
 
 type (

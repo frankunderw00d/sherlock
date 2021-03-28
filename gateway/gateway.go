@@ -7,6 +7,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/nats-io/nats.go"
 	"io/ioutil"
+	"net"
 	nHttp "net/http"
 	"sherlock/client"
 	"sherlock/log"
@@ -24,13 +25,18 @@ type (
 		Destroy() error
 	}
 
-	http struct {
+	baseGateway struct {
 		address string
-		engine  *gin.Engine
+		bl      BlackList
+	}
+
+	http struct {
+		baseGateway
+		engine *gin.Engine
 	}
 
 	webSocket struct {
-		address  string
+		baseGateway
 		engine   *gin.Engine
 		upgrader *websocket.Upgrader
 		conn     *websocket.Conn
@@ -52,18 +58,50 @@ var ()
 func init() { gin.SetMode(gin.ReleaseMode) }
 
 func NewHTTPGateway(address string) Gateway {
-	return &http{address: address}
+	return &http{
+		baseGateway: baseGateway{
+			address: address,
+			bl:      NewBlackList(),
+		},
+	}
 }
 
 func NewWebSocketGateway(address string) Gateway {
-	return &webSocket{address: address}
+	return &webSocket{
+		baseGateway: baseGateway{
+			address: address,
+			bl:      NewBlackList(),
+		},
+	}
 }
 
 func (h *http) Name() string    { return HTTPGatewayName }
 func (h *http) Address() string { return h.address }
 func (h *http) Init(c client.Client) error {
+	// 网关订阅黑名单更新
+	if sp, err := c.Subscribe(BlackListSwitchSubject, "", h.bl.OnlineSwitch); err != nil {
+		log.ErrorF("HTTP gateway subscribe [%s] error : %s", BlackListSwitchSubject, err.Error())
+	} else {
+		log.DebugF("HTTP gate subscribe [%s] success : %+v", BlackListSwitchSubject, sp)
+	}
+
+	// 网关订阅黑名单更新
+	if sp, err := c.Subscribe(BlackListUpdateSubject, "", h.bl.OnlineUpdate); err != nil {
+		log.ErrorF("HTTP gateway subscribe [%s] error : %s", BlackListUpdateSubject, err.Error())
+	} else {
+		log.DebugF("HTTP gate subscribe [%s] success : %+v", BlackListUpdateSubject, sp)
+	}
+
+	// 初始化 HTTP 引擎
 	h.engine = gin.New()
 	h.engine.POST("/:module/:path", func(context *gin.Context) {
+		// 黑名单过滤
+		if !h.baseGateway.FilterIP(context.Request.Host) {
+			context.String(nHttp.StatusBadRequest, "You are block by blacklist")
+			return
+		}
+
+		// 模块.路径 指定了发布主题，请求 Body 指定了数据
 		module := context.Param("module")
 		path := context.Param("path")
 		data, err := ioutil.ReadAll(context.Request.Body)
@@ -80,6 +118,7 @@ func (h *http) Init(c client.Client) error {
 		log.DebugF("HTTP get new message from [%s] : %s", context.Request.RemoteAddr, message.Subject)
 		log.DebugF("HTTP get new message : %s", string(message.Data))
 
+		// 通过请求的方式发布及接收响应
 		response, err := c.Request(message.Subject, "", message.Data, time.Duration(12)*time.Second)
 		if err != nil {
 			log.ErrorF("HTTP request to [%s] subject error : %s", message.Subject, err.Error())
@@ -100,7 +139,23 @@ func (h *http) Destroy() error {
 func (ws *webSocket) Name() string    { return WebSocketGatewayName }
 func (ws *webSocket) Address() string { return ws.address }
 func (ws *webSocket) Init(c client.Client) error {
+	// 网关订阅黑名单更新
+	if sp, err := c.Subscribe(BlackListSwitchSubject, "", ws.bl.OnlineSwitch); err != nil {
+		log.ErrorF("HTTP gateway subscribe [%s] error : %s", BlackListSwitchSubject, err.Error())
+	} else {
+		log.DebugF("HTTP gate subscribe [%s] success : %+v", BlackListSwitchSubject, sp)
+	}
+
+	// 网关订阅黑名单更新
+	if sp, err := c.Subscribe(BlackListUpdateSubject, "", ws.bl.OnlineUpdate); err != nil {
+		log.ErrorF("HTTP gateway subscribe [%s] error : %s", BlackListUpdateSubject, err.Error())
+	} else {
+		log.DebugF("HTTP gate subscribe [%s] success : %+v", BlackListUpdateSubject, sp)
+	}
+
+	// 初始化 HTTP 引擎
 	ws.engine = gin.New()
+	// 初始化 WebSocket 升级件
 	ws.upgrader = &websocket.Upgrader{
 		ReadBufferSize:  1024,
 		WriteBufferSize: 1024,
@@ -109,11 +164,19 @@ func (ws *webSocket) Init(c client.Client) error {
 		},
 	}
 	ws.engine.GET("/ws", func(context *gin.Context) {
+		// 黑名单过滤
+		if !ws.baseGateway.FilterIP(context.Request.Host) {
+			context.String(nHttp.StatusBadRequest, "You are block by blacklist")
+			return
+		}
+
+		// 对 [ws://address/ws] 路径上的请求统一升级为长连接
 		conn, err := ws.upgrader.Upgrade(context.Writer, context.Request, nil)
 		if err != nil {
 			log.FatalF("upgrade http connection to WebSocket error : %s", err.Error())
 			return
 		}
+		// 同时开启一个 [WS_CONN.远程地址摘要] 主题的订阅，用于接收回复消息
 		sp, err := c.Subscribe(ws.connSubject(conn.RemoteAddr().String()), "", func(msg *nats.Msg) {
 			if err := conn.WriteMessage(websocket.TextMessage, msg.Data); err != nil {
 				log.ErrorF("Write message to [%s] error : %s", conn.RemoteAddr().String(), err.Error())
@@ -121,6 +184,10 @@ func (ws *webSocket) Init(c client.Client) error {
 		})
 		if err != nil {
 			log.ErrorF("Subscribe [%s] according to the remote address [%s] error : %s", "WS_"+encrypt.MD5(conn.RemoteAddr().String()), conn.RemoteAddr().String())
+			// 如果订阅失败，直接关闭连接
+			if err := conn.Close(); err != nil {
+				log.ErrorF("WebSocket connection [%s] close error : %s", conn.RemoteAddr().String(), err.Error())
+			}
 			return
 		}
 
@@ -140,7 +207,7 @@ func (ws *webSocket) Init(c client.Client) error {
 				log.ErrorF("WebSocket connection [%s] read message error : %s", conn.RemoteAddr().String(), err.Error())
 				break
 			}
-
+			// 接收的消息必须以 Message 的形式指定
 			message := &Message{}
 			if err := json.Unmarshal(data, message); err != nil {
 				log.ErrorF("WebSocket connection [%s] read message error : %s", conn.RemoteAddr().String(), err.Error())
@@ -150,6 +217,7 @@ func (ws *webSocket) Init(c client.Client) error {
 			log.DebugF("WebSocket get new message from [%s] : %s", context.Request.RemoteAddr, message.Subject)
 			log.DebugF("WebSocket get new message : %s", string(message.Data))
 
+			// 通过指定 Reply 为 [WS_CONN.远程地址摘要] ，由上面的订阅接收并且回复给用户
 			if err := c.Publish(message.Subject, ws.connSubject(conn.RemoteAddr().String()), message.Data); err != nil {
 				log.ErrorF("WebSocket publish a message to [%s] subject error : %s", message.Subject, err.Error())
 				continue
@@ -162,4 +230,17 @@ func (ws *webSocket) Run() error     { return ws.engine.Run(ws.address) }
 func (ws *webSocket) Destroy() error { return nil }
 func (ws *webSocket) connSubject(address string) string {
 	return fmt.Sprintf("WS_CONN.%s", encrypt.MD5(address))
+}
+
+func (bg *baseGateway) FilterIP(host string) bool {
+	h, _, err := net.SplitHostPort(host)
+	if err != nil {
+		log.ErrorF("Parse connection host [%s] error : %s", host, err.Error())
+		return false
+	}
+	log.DebugF("Split host : %s", host)
+	if !bg.bl.Filter(h) {
+		return false
+	}
+	return true
 }

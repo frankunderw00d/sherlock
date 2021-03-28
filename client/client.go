@@ -48,7 +48,7 @@ var ()
 
 func init() {}
 
-func NewClient(name, address string) Client {
+func NewClient(name, address, token string) Client {
 	opts := []nats.Option{
 		nats.Name(name),
 		nats.MaxReconnects(DefaultMaxReconnects),
@@ -57,6 +57,7 @@ func NewClient(name, address string) Client {
 		nats.ReconnectHandler(func(_ *nats.Conn) {
 			log.Println("nats client reconnected")
 		}),
+		nats.Token(token),
 	}
 
 	conn, err := nats.Connect(address, opts...)
