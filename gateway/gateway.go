@@ -78,7 +78,7 @@ func NewWebSocketGateway(address string) Gateway {
 func (h *http) Name() string    { return HTTPGatewayName }
 func (h *http) Address() string { return h.address }
 func (h *http) Init(c client.Client) error {
-	// 网关订阅黑名单更新
+	// 网关订阅黑名单开关
 	if sp, err := c.Subscribe(BlackListSwitchSubject, "", h.bl.OnlineSwitch); err != nil {
 		log.ErrorF("HTTP gateway subscribe [%s] error : %s", BlackListSwitchSubject, err.Error())
 	} else {
@@ -94,13 +94,10 @@ func (h *http) Init(c client.Client) error {
 
 	// 初始化 HTTP 引擎
 	h.engine = gin.New()
+	// 添加IP黑名单中间件
+	h.engine.Use(h.baseGateway.FilterIPMiddleware)
+	// 只支持 POST 请求
 	h.engine.POST("/:module/:path", func(context *gin.Context) {
-		// 黑名单过滤
-		if !h.baseGateway.FilterIP(context.Request.Host) {
-			context.String(nHttp.StatusBadRequest, "You are block by blacklist")
-			return
-		}
-
 		// 模块.路径 指定了发布主题，请求 Body 指定了数据
 		module := context.Param("module")
 		path := context.Param("path")
@@ -139,7 +136,7 @@ func (h *http) Destroy() error {
 func (ws *webSocket) Name() string    { return WebSocketGatewayName }
 func (ws *webSocket) Address() string { return ws.address }
 func (ws *webSocket) Init(c client.Client) error {
-	// 网关订阅黑名单更新
+	// 网关订阅黑名单开关
 	if sp, err := c.Subscribe(BlackListSwitchSubject, "", ws.bl.OnlineSwitch); err != nil {
 		log.ErrorF("HTTP gateway subscribe [%s] error : %s", BlackListSwitchSubject, err.Error())
 	} else {
@@ -155,6 +152,8 @@ func (ws *webSocket) Init(c client.Client) error {
 
 	// 初始化 HTTP 引擎
 	ws.engine = gin.New()
+	// 添加IP黑名单中间件
+	ws.engine.Use(ws.baseGateway.FilterIPMiddleware)
 	// 初始化 WebSocket 升级件
 	ws.upgrader = &websocket.Upgrader{
 		ReadBufferSize:  1024,
@@ -164,12 +163,6 @@ func (ws *webSocket) Init(c client.Client) error {
 		},
 	}
 	ws.engine.GET("/ws", func(context *gin.Context) {
-		// 黑名单过滤
-		if !ws.baseGateway.FilterIP(context.Request.Host) {
-			context.String(nHttp.StatusBadRequest, "You are block by blacklist")
-			return
-		}
-
 		// 对 [ws://address/ws] 路径上的请求统一升级为长连接
 		conn, err := ws.upgrader.Upgrade(context.Writer, context.Request, nil)
 		if err != nil {
@@ -232,13 +225,17 @@ func (ws *webSocket) connSubject(address string) string {
 	return fmt.Sprintf("WS_CONN.%s", encrypt.MD5(address))
 }
 
-func (bg *baseGateway) FilterIP(host string) bool {
-	h, _, err := net.SplitHostPort(host)
+// 黑名单过滤
+func (bg *baseGateway) FilterIPMiddleware(context *gin.Context) {
+	h, _, err := net.SplitHostPort(context.Request.Host)
 	if err != nil {
-		log.ErrorF("Parse connection host [%s] error : %s", host, err.Error())
-		return false
+		log.ErrorF("Parse connection host [%s] error : %s", context.Request.Host, err.Error())
+		context.Abort()
 	}
-	log.DebugF("Split host : %s", host)
+	log.DebugF("Split host : %s", h)
 
-	return bg.bl.Filter(h)
+	if !bg.bl.Filter(h) {
+		context.String(nHttp.StatusBadRequest, "You are block by blacklist")
+		context.Abort()
+	}
 }

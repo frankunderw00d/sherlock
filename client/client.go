@@ -31,10 +31,14 @@ type (
 		// 回复(其实就是发布)
 		// subject , reply , data
 		Reply(string, string, []byte) error
+
+		// 加入中间件
+		UseMiddleware(func(*nats.Msg))
 	}
 
 	client struct {
 		conn *nats.Conn
+		mws  []nats.MsgHandler
 	}
 )
 
@@ -66,7 +70,10 @@ func NewClient(name, address, token string) Client {
 		return nil
 	}
 
-	return &client{conn: conn}
+	return &client{
+		conn: conn,
+		mws:  make([]nats.MsgHandler, 0),
+	}
 }
 
 func (c *client) Close() {
@@ -74,11 +81,22 @@ func (c *client) Close() {
 }
 
 func (c *client) Subscribe(subject, queue string, handler nats.MsgHandler) (*nats.Subscription, error) {
-	if queue == "" {
-		return c.conn.Subscribe(subject, handler)
+	fh := handler
+	hf := func(a, b nats.MsgHandler) func(*nats.Msg) {
+		return func(msg *nats.Msg) {
+			a(msg)
+			b(msg)
+		}
+	}
+	for i := len(c.mws) - 1; i >= 0; i-- {
+		fh = hf(c.mws[i], fh)
 	}
 
-	return c.conn.QueueSubscribe(subject, queue, handler)
+	if queue == "" {
+		return c.conn.Subscribe(subject, fh)
+	}
+
+	return c.conn.QueueSubscribe(subject, queue, fh)
 }
 
 func (c *client) Publish(subject, reply string, data []byte) error {
@@ -107,4 +125,8 @@ func (c *client) Response(subject, queue string, handler nats.MsgHandler) (*nats
 
 func (c *client) Reply(subject, reply string, data []byte) error {
 	return c.Publish(subject, reply, data)
+}
+
+func (c *client) UseMiddleware(m func(*nats.Msg)) {
+	c.mws = append(c.mws, m)
 }
