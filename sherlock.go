@@ -1,25 +1,36 @@
 package sherlock
 
 import (
-	"fmt"
-
-	//"log"
+	"errors"
 	"sherlock/client"
-	"sherlock/gateway"
 	"sherlock/log"
 )
 
 type (
+	// 服务定义
 	Service interface {
-		Run(...gateway.Gateway)
-		Destroy()
-		Client() client.Client
+		// 服务信息
+		Info() string
+		// 初始化
+		Init(client.Client) error
+		// 运行 （必须阻塞该执行线程）
+		Run() error
+		// 销毁
+		Destroy() error
 	}
 
-	service struct {
-		name    string        // 服务名称
-		version string        // 服务版本
-		c       client.Client // nats 客户端
+	// 启动器
+	Sherlock interface {
+		// 初始化
+		Init(name, address, token string) error
+		// 运行嵌套服务
+		Run(services ...Service) error
+		// 关闭
+		Close() error
+	}
+
+	sherlock struct {
+		client client.Client
 	}
 )
 
@@ -31,94 +42,88 @@ const (
 `
 )
 
-var ()
+var (
+	ErrEmptyServices = errors.New("service list is nil or empty")
+)
 
-func init() {}
+var (
+	defaultSherlock Sherlock
+)
 
-// 新建服务
-func NewService(name, version string, c client.Client) Service {
-	return &service{
-		name:    name,
-		version: version,
-		c:       c,
-	}
+func init() {
+	defaultSherlock = &sherlock{}
 }
 
-// 启动
-func (s *service) Run(gateways ...gateway.Gateway) {
-	log.DebugF(Version)
-	log.InfoF(s.info())
+func NewSherlock() Sherlock {
+	return &sherlock{}
+}
 
-	if gateways == nil || len(gateways) == 0 {
-		log.DebugF("[%s] Didn't have any gateway", s.name)
-		return
+// 初始化
+func (s *sherlock) Init(name, address, token string) error {
+	log.DebugLn(Version)
+
+	c, err := client.NewClient(name, address, token)
+	if err != nil {
+		return err
 	}
 
-	for _, gw := range gateways {
-		go func(g gateway.Gateway) {
-			log.DebugF("[%s] gateway initialize", g.Name())
-			// initialize
-			if err := g.Init(s.c); err != nil {
-				log.ErrorF("[%s] gateway initialize error : %s", g.Name(), err.Error())
-				return
-			}
+	s.client = c
 
-			log.DebugF("[%s] gateway gonna running on the %s", g.Name(), g.Address())
-			// run
-			if err := g.Run(); err != nil {
-				log.ErrorF("[%s] gateway run error : %s", g.Name(), err.Error())
-				return
-			}
+	return nil
+}
 
-			log.DebugF("[%s] gateway destroying", g.Name())
-			// destroy
-			if err := g.Destroy(); err != nil {
-				log.ErrorF("[%s] gateway destroy error : %s", g.Name(), err.Error())
-				return
-			}
-		}(gw)
+// 运行嵌套服务
+func (s *sherlock) Run(services ...Service) error {
+	if services == nil || len(services) == 0 {
+		return ErrEmptyServices
 	}
+
+	for _, ser := range services {
+		go func(service Service) {
+			log.InfoF("Initialize %s service", service.Info())
+			if err := service.Init(s.client); err != nil {
+				log.ErrorF("Initialize %s service error : %s", service.Info(), err.Error())
+				return
+			}
+
+			log.InfoF("Running %s service", service.Info())
+			if err := service.Run(); err != nil {
+				log.ErrorF("Running %s service error : %s", service.Info(), err.Error())
+				return
+			}
+
+			log.InfoF("Destroy %s service", service.Info())
+			if err := service.Destroy(); err != nil {
+				log.ErrorF("Destroy %s service error : %s", service.Info(), err.Error())
+				return
+			}
+
+			log.InfoF("%s service done", service.Info())
+		}(ser)
+	}
+
+	return nil
 }
 
 // 关闭
-func (s *service) Destroy() {
-	s.c.Close()
+func (s *sherlock) Close() error {
+
+	s.client.Close()
+
+	return nil
 }
 
-// 获取 nats-server 连接
-func (s *service) Client() client.Client {
-	return s.c
+// 初始化
+func Init(name, address, token string) error {
+	return defaultSherlock.Init(name, address, token)
 }
 
-// 构造服务信息打印
-func (s *service) info() string {
-	max := 38
-	infoLen := len(s.name) + len(s.version) + 3
-	if infoLen > 38 {
-		max = infoLen
-		if max%2 != 0 {
-			max += 1
-		}
-	}
+// 运行嵌套服务
+func Run(services ...Service) error {
+	return defaultSherlock.Run(services...)
+}
 
-	f := ""
-	t := ""
-	for i := 0; i < max; i++ {
-		f += "="
-		t += "="
-	}
-
-	info := fmt.Sprintf(" %s %s ", s.name, s.version)
-	left := (max - infoLen) / 2
-	lSide := ""
-	rSide := ""
-	for i := 0; i < left; i++ {
-		lSide += "="
-		rSide += "="
-	}
-	if infoLen%2 != 0 {
-		rSide += ""
-	}
-
-	return fmt.Sprintf("\n%s\n%s%s%s\n%s", f, lSide, info, rSide, t)
+// 关闭
+func Close() error {
+	return defaultSherlock.Close()
 }

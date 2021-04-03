@@ -14,7 +14,9 @@ type (
 	}
 
 	// 字符串格式化定义实现
-	StringFormatter struct{}
+	StringFormatter struct {
+		prefix []string
+	}
 
 	// JSON 格式化定义实现
 	JSONFormatter struct{}
@@ -25,8 +27,8 @@ const ()
 var ()
 
 // 实例化字符串格式化定义实现
-func NewStringFormatter() Formatter {
-	return &StringFormatter{}
+func NewStringFormatter(prefix []string) Formatter {
+	return &StringFormatter{prefix: prefix}
 }
 
 // 实例化JSON 格式化定义实现
@@ -95,6 +97,13 @@ func (s *StringFormatter) Format(level Level, flag Flag, t time.Time, frames []r
 
 			header += "]"
 		}
+
+		if s.prefix != nil && len(s.prefix) > 0 {
+			for _, value := range s.prefix {
+				header += fmt.Sprintf("[%s]", value)
+			}
+		}
+
 		return header + " " + str
 	} else {
 		return str

@@ -18,16 +18,20 @@ import (
 
 type (
 	Gateway interface {
-		Name() string
-		Address() string
+		// 服务信息
+		Info() string
+		// 初始化
 		Init(client.Client) error
-		Run() error // Run function have to block the thread
+		// 运行 （必须阻塞该执行线程）
+		Run() error
+		// 销毁
 		Destroy() error
 	}
 
 	baseGateway struct {
-		address string
-		bl      BlackList
+		address       string
+		subscriptions []*nats.Subscription
+		bl            BlackList
 	}
 
 	http struct {
@@ -60,8 +64,9 @@ func init() { gin.SetMode(gin.ReleaseMode) }
 func NewHTTPGateway(address string) Gateway {
 	return &http{
 		baseGateway: baseGateway{
-			address: address,
-			bl:      NewBlackList(),
+			address:       address,
+			subscriptions: []*nats.Subscription{},
+			bl:            NewBlackList(),
 		},
 	}
 }
@@ -69,27 +74,29 @@ func NewHTTPGateway(address string) Gateway {
 func NewWebSocketGateway(address string) Gateway {
 	return &webSocket{
 		baseGateway: baseGateway{
-			address: address,
-			bl:      NewBlackList(),
+			address:       address,
+			subscriptions: []*nats.Subscription{},
+			bl:            NewBlackList(),
 		},
 	}
 }
 
-func (h *http) Name() string    { return HTTPGatewayName }
-func (h *http) Address() string { return h.address }
+func (h *http) Info() string { return HTTPGatewayName }
 func (h *http) Init(c client.Client) error {
 	// 网关订阅黑名单开关
 	if sp, err := c.Subscribe(BlackListSwitchSubject, "", h.bl.OnlineSwitch); err != nil {
 		log.ErrorF("HTTP gateway subscribe [%s] error : %s", BlackListSwitchSubject, err.Error())
 	} else {
-		log.DebugF("HTTP gate subscribe [%s] success : %+v", BlackListSwitchSubject, sp)
+		log.DebugF("HTTP gateway subscribe [%s] success", sp.Subject)
+		h.subscriptions = append(h.subscriptions, sp)
 	}
 
 	// 网关订阅黑名单更新
 	if sp, err := c.Subscribe(BlackListUpdateSubject, "", h.bl.OnlineUpdate); err != nil {
 		log.ErrorF("HTTP gateway subscribe [%s] error : %s", BlackListUpdateSubject, err.Error())
 	} else {
-		log.DebugF("HTTP gate subscribe [%s] success : %+v", BlackListUpdateSubject, sp)
+		log.DebugF("HTTP gateway subscribe [%s] success", sp.Subject)
+		h.subscriptions = append(h.subscriptions, sp)
 	}
 
 	// 初始化 HTTP 引擎
@@ -129,25 +136,35 @@ func (h *http) Init(c client.Client) error {
 }
 func (h *http) Run() error { return h.engine.Run(h.address) }
 func (h *http) Destroy() error {
+	// 取消订阅
+	for _, sp := range h.subscriptions {
+		if err := sp.Unsubscribe(); err != nil {
+			return err
+		} else {
+			log.DebugF("HTTP gateway unsubscribe [%s] success", sp.Subject)
+		}
+	}
+
 	h.engine = nil
 	return nil
 }
 
-func (ws *webSocket) Name() string    { return WebSocketGatewayName }
-func (ws *webSocket) Address() string { return ws.address }
+func (ws *webSocket) Info() string { return WebSocketGatewayName }
 func (ws *webSocket) Init(c client.Client) error {
 	// 网关订阅黑名单开关
 	if sp, err := c.Subscribe(BlackListSwitchSubject, "", ws.bl.OnlineSwitch); err != nil {
-		log.ErrorF("HTTP gateway subscribe [%s] error : %s", BlackListSwitchSubject, err.Error())
+		log.ErrorF("WebSocket gateway subscribe [%s] error : %s", BlackListSwitchSubject, err.Error())
 	} else {
-		log.DebugF("HTTP gate subscribe [%s] success : %+v", BlackListSwitchSubject, sp)
+		ws.subscriptions = append(ws.subscriptions, sp)
+		log.DebugF("WebSocket gateway subscribe [%s] success", sp.Subject)
 	}
 
 	// 网关订阅黑名单更新
 	if sp, err := c.Subscribe(BlackListUpdateSubject, "", ws.bl.OnlineUpdate); err != nil {
-		log.ErrorF("HTTP gateway subscribe [%s] error : %s", BlackListUpdateSubject, err.Error())
+		log.ErrorF("WebSocket gateway subscribe [%s] error : %s", BlackListUpdateSubject, err.Error())
 	} else {
-		log.DebugF("HTTP gate subscribe [%s] success : %+v", BlackListUpdateSubject, sp)
+		ws.subscriptions = append(ws.subscriptions, sp)
+		log.DebugF("WebSocket gateway subscribe [%s] success", sp.Subject)
 	}
 
 	// 初始化 HTTP 引擎
@@ -219,8 +236,20 @@ func (ws *webSocket) Init(c client.Client) error {
 	})
 	return nil
 }
-func (ws *webSocket) Run() error     { return ws.engine.Run(ws.address) }
-func (ws *webSocket) Destroy() error { return nil }
+func (ws *webSocket) Run() error { return ws.engine.Run(ws.address) }
+func (ws *webSocket) Destroy() error {
+	// 取消订阅
+	for _, sp := range ws.subscriptions {
+		if err := sp.Unsubscribe(); err != nil {
+			return err
+		} else {
+			log.DebugF("WebSocket gateway unsubscribe [%s] success", sp.Subject)
+		}
+	}
+
+	ws.engine = nil
+	return nil
+}
 func (ws *webSocket) connSubject(address string) string {
 	return fmt.Sprintf("WS_CONN.%s", encrypt.MD5(address))
 }

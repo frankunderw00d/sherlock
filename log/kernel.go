@@ -84,7 +84,7 @@ func NewKernel() Kernel {
 		filter:    LevelDebug,
 		flag:      FlagDefault,
 		depth:     DefaultSkipCallDepth,
-		formatter: NewStringFormatter(),
+		formatter: NewStringFormatter(nil),
 		hook:      StandardOutputHook,
 		mutex:     sync.Mutex{},
 	}

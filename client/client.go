@@ -54,7 +54,7 @@ var ()
 
 func init() {}
 
-func NewClient(name, address, token string) Client {
+func NewClient(name, address, token string) (Client, error) {
 	opts := []nats.Option{
 		nats.Name(name),
 		nats.MaxReconnects(DefaultMaxReconnects),
@@ -69,7 +69,7 @@ func NewClient(name, address, token string) Client {
 	conn, err := nats.Connect(address, opts...)
 	if err != nil {
 		log.Printf("nats connect error : %s", err.Error())
-		return nil
+		return nil, err
 	}
 
 	return &client{
@@ -82,7 +82,7 @@ func NewClient(name, address, token string) Client {
 			}
 		},
 		mw: NewMiddleware(),
-	}
+	}, nil
 }
 
 func (c *client) Close() {
