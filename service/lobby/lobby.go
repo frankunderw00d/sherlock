@@ -7,7 +7,6 @@ import (
 	"sherlock/client"
 	"sherlock/log"
 	"strings"
-	"sync"
 )
 
 type (
@@ -34,8 +33,6 @@ type (
 		Close()
 		// 使用全局中间件
 		UseMiddleware(middlewareList ...client.HandleFunc) error
-		// 添加房间
-		AddRoom(room Room) error
 	}
 
 	// 子游戏大厅路由项
@@ -52,8 +49,6 @@ type (
 		gameID        string                // 游戏 ID
 		name          string                // 游戏名称
 		routes        map[string]lobbyRoute // 路由组	map[subject]lobbyRoute
-		mutex         sync.Mutex            // 游戏房间锁
-		rooms         map[string]Room       // 游戏房间	map[RoomID]Room
 		subscriptions []*nats.Subscription  // 订阅记录
 		closeChan     chan struct{}         // 关闭通知通道
 		middleware    []client.HandleFunc   // 中间件组
@@ -74,8 +69,6 @@ func NewLobby(pid, gid, name string) Lobby {
 		gameID:        gid,
 		name:          name,
 		routes:        map[string]lobbyRoute{},
-		mutex:         sync.Mutex{},
-		rooms:         map[string]Room{},
 		subscriptions: []*nats.Subscription{},
 		closeChan:     make(chan struct{}),
 		middleware:    []client.HandleFunc{},
@@ -119,23 +112,6 @@ func (l *lobby) UseMiddleware(middlewareList ...client.HandleFunc) error {
 
 	l.middleware = append(l.middleware, middlewareList...)
 
-	return nil
-}
-
-// 添加房间
-func (l *lobby) AddRoom(room Room) error {
-	if room == nil {
-		return errors.New("room can't be nil")
-	}
-
-	l.mutex.Lock()
-	defer l.mutex.Unlock()
-
-	if _, exist := l.rooms[room.RoomID()]; exist {
-		return errors.New(room.RoomID() + " exist")
-	}
-
-	l.rooms[room.RoomID()] = room
 	return nil
 }
 
