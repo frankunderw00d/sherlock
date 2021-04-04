@@ -13,8 +13,8 @@ type (
 		// 加锁
 		Lock(string, int) bool
 
-		// 阻塞调用线程直到加锁为止，间隔尝试时间为 0.04s、0.2s、1s、1s、1s......
-		UntilLock(string, int) bool
+		// 阻塞调用线程直到加锁为止，间隔尝试时间为 0.04s
+		UntilLock(string, int)
 
 		// 解锁
 		Unlock(string) bool
@@ -77,27 +77,10 @@ func (rl *redisLock) Lock(key string, ex int) bool {
 	return true
 }
 
-func (rl *redisLock) UntilLock(key string, ex int) bool {
-	// 连接为 nil ， 加锁失败
-	if rl.conn == nil {
-		return false
-	}
-	// 键为空，加锁失败
-	if key == "" {
-		return false
-	}
-
-	wait := time.Millisecond * time.Duration(40)
-
+func (rl *redisLock) UntilLock(key string, ex int) {
 	for !rl.Lock(key, ex) {
-		time.Sleep(wait)
-
-		if wait < time.Second {
-			wait = wait * 5
-		}
+		time.Sleep(time.Millisecond * time.Duration(40))
 	}
-
-	return true
 }
 
 func (rl *redisLock) Unlock(key string) bool {
