@@ -4,6 +4,7 @@ import (
 	"errors"
 	"sherlock/client"
 	"sherlock/log"
+	"sync"
 )
 
 type (
@@ -31,6 +32,7 @@ type (
 
 	sherlock struct {
 		client client.Client
+		wg     sync.WaitGroup
 	}
 )
 
@@ -51,11 +53,11 @@ var (
 )
 
 func init() {
-	defaultSherlock = &sherlock{}
+	defaultSherlock = &sherlock{wg: sync.WaitGroup{}}
 }
 
 func NewSherlock() Sherlock {
-	return &sherlock{}
+	return &sherlock{wg: sync.WaitGroup{}}
 }
 
 // 初始化
@@ -79,7 +81,9 @@ func (s *sherlock) Run(services ...Service) error {
 	}
 
 	for _, ser := range services {
+		s.wg.Add(1)
 		go func(service Service) {
+			defer s.wg.Done()
 			log.InfoF("Initialize %s service", service.Info())
 			if err := service.Init(s.client); err != nil {
 				log.ErrorF("Initialize %s service error : %s", service.Info(), err.Error())
@@ -107,6 +111,8 @@ func (s *sherlock) Run(services ...Service) error {
 
 // 关闭
 func (s *sherlock) Close() error {
+	// 等待所有 Service 销毁完成
+	s.wg.Wait()
 
 	s.client.Close()
 

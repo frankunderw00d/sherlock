@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/gin-gonic/gin"
@@ -26,10 +27,14 @@ type (
 		Run() error
 		// 销毁
 		Destroy() error
+
+		// 主动关闭
+		Close() error
 	}
 
 	baseGateway struct {
 		address       string
+		server        *nHttp.Server
 		subscriptions []*nats.Subscription
 		bl            BlackList
 	}
@@ -65,6 +70,7 @@ func NewHTTPGateway(address string) Gateway {
 	return &http{
 		baseGateway: baseGateway{
 			address:       address,
+			server:        nil,
 			subscriptions: []*nats.Subscription{},
 			bl:            NewBlackList(),
 		},
@@ -75,12 +81,14 @@ func NewWebSocketGateway(address string) Gateway {
 	return &webSocket{
 		baseGateway: baseGateway{
 			address:       address,
+			server:        nil,
 			subscriptions: []*nats.Subscription{},
 			bl:            NewBlackList(),
 		},
 	}
 }
 
+func (h *http) Close() error { return h.server.Shutdown(context.Background()) }
 func (h *http) Info() string { return HTTPGatewayName }
 func (h *http) Init(c client.Client) error {
 	// 网关订阅黑名单开关
@@ -132,9 +140,23 @@ func (h *http) Init(c client.Client) error {
 
 		context.String(nHttp.StatusOK, string(response.Data))
 	})
+	// 初始化服务
+	h.server = &nHttp.Server{
+		Addr:    h.address,
+		Handler: h.engine,
+	}
 	return nil
 }
-func (h *http) Run() error { return h.engine.Run(h.address) }
+func (h *http) Run() error {
+	if err := h.server.ListenAndServe(); err != nil {
+		if err == nHttp.ErrServerClosed { // 主动关闭
+			return nil
+		} else {
+			return err
+		}
+	}
+	return nil
+}
 func (h *http) Destroy() error {
 	// 取消订阅
 	for _, sp := range h.subscriptions {
@@ -149,6 +171,7 @@ func (h *http) Destroy() error {
 	return nil
 }
 
+func (ws *webSocket) Close() error { return ws.server.Shutdown(context.Background()) }
 func (ws *webSocket) Info() string { return WebSocketGatewayName }
 func (ws *webSocket) Init(c client.Client) error {
 	// 网关订阅黑名单开关
@@ -234,9 +257,23 @@ func (ws *webSocket) Init(c client.Client) error {
 			}
 		}
 	})
+	// 初始化服务
+	ws.server = &nHttp.Server{
+		Addr:    ws.address,
+		Handler: ws.engine,
+	}
 	return nil
 }
-func (ws *webSocket) Run() error { return ws.engine.Run(ws.address) }
+func (ws *webSocket) Run() error {
+	if err := ws.server.ListenAndServe(); err != nil {
+		if err == nHttp.ErrServerClosed { // 主动关闭
+			return nil
+		} else {
+			return err
+		}
+	}
+	return nil
+}
 func (ws *webSocket) Destroy() error {
 	// 取消订阅
 	for _, sp := range ws.subscriptions {
